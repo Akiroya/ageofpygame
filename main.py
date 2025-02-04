@@ -1,21 +1,18 @@
 import pygame
 import random
 import sys
-import math
 from pygame import mixer
 
-# Инициализация звука
+# Инициализация Pygame и звука
+pygame.init()
 mixer.init()
-select_sound = mixer.Sound('select.wav')
-move_sound = mixer.Sound('move.wav')
-coin_sound = mixer.Sound('coin.wav')
 
+# Константы
 WIDTH, HEIGHT = 1200, 800
 GRID_SIZE = 40
 UNIT_COSTS = {'warrior': 40, 'scout': 30, 'knight': 60}
 FPS = 60
 REGION_UPGRADE_COST = 100
-
 COLORS = {
     "neutral": (150, 150, 150),
     "country1": (255, 120, 120),
@@ -26,6 +23,12 @@ COLORS = {
     "treasure": (255, 215, 0),
     "upgraded": (200, 160, 60),
 }
+
+# Инициализация экрана
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Strategy Game")
+font = pygame.font.Font(None, 36)
+clock = pygame.time.Clock()
 
 class Region:
     def __init__(self, x, y, size, country="neutral"):
@@ -63,12 +66,6 @@ class Unit:
         self.strength = self.get_strength()
         self.radius = 12
         self.anim_progress = 0
-        
-        self.images = {
-            'warrior': pygame.image.load('warrior.png'),
-            'scout': pygame.image.load('scout.png'),
-            'knight': pygame.image.load('knight.png')
-        }
         
     def get_max_moves(self):
         return {'warrior': 1, 'scout': 3, 'knight': 2}[self.unit_type]
@@ -116,14 +113,12 @@ class Unit:
             if new_region.has_treasure:
                 gold_gain += 50
                 new_region.has_treasure = False
-                coin_sound.play()
             game.countries[self.owner]["gold"] += gold_gain
             
         if new_region.upgrade_level > 0:
             self.health = min(self.health + 20, 100)
             
         game.check_victory()
-        move_sound.play()
         
     def resolve_combat(self, defender):
         attacker_power = self.strength * (self.health / 100)
@@ -144,12 +139,11 @@ class Unit:
         if self.anim_progress < 1:
             pygame.draw.circle(screen, color, self.center, self.radius)
         else:
-            screen.blit(pygame.transform.scale(self.images[self.unit_type], (24, 24)), 
-                       (self.center[0]-12, self.center[1]-12))
+            pygame.draw.circle(screen, color, self.region.rect.center, self.radius)
             
         # Health bar
-        pygame.draw.rect(screen, (255,0,0), (self.center[0]-15, self.center[1]+15, 30, 5))
-        pygame.draw.rect(screen, (0,255,0), (self.center[0]-15, self.center[1]+15, 30*(self.health/100), 5))
+        pygame.draw.rect(screen, (255,0,0), (self.region.rect.centerx-15, self.region.rect.centery+15, 30, 5))
+        pygame.draw.rect(screen, (0,255,0), (self.region.rect.centerx-15, self.region.rect.centery+15, 30*(self.health/100), 5))
 
 class Game:
     def __init__(self):
@@ -163,11 +157,6 @@ class Game:
         self.current_turn_index = 0
         self.turn_counter = 1
         self.events = []
-        self.unit_icons = {
-            'warrior': pygame.image.load('warrior_icon.png'),
-            'scout': pygame.image.load('scout_icon.png'),
-            'knight': pygame.image.load('knight_icon.png')
-        }
         
     def generate_map(self):
         self.regions = []
@@ -175,7 +164,6 @@ class Game:
             for x in range(0, WIDTH, GRID_SIZE):
                 self.regions.append(Region(x, y, GRID_SIZE))
                 
-        # Распределение начальных территорий
         for country in self.countries:
             for _ in range(8):
                 region = random.choice([r for r in self.regions if r.country == "neutral"])
@@ -183,7 +171,6 @@ class Game:
                 if random.random() < 0.2:
                     region.has_treasure = True
                     
-        # Добавление улучшенных регионов
         for _ in range(5):
             region = random.choice(self.regions)
             region.upgrade_level = 1
@@ -198,14 +185,34 @@ class Game:
                     region.unit = Unit(region, country, unit_type)
                     
     def handle_input(self):
-        # [Обработка ввода аналогично предыдущей версии, но с дополнениями]
-        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+                
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                x, y = event.pos
+                region = self.get_region_at_pos(x, y)
+                if region:
+                    if region.unit and region.unit.owner == self.player_country:
+                        self.selected_unit = region.unit
+                    elif self.selected_unit and self.is_adjacent(self.selected_unit.region, region):
+                        self.selected_unit.move_to(region, self)
+                        self.selected_unit = None
+                        self.next_turn()
+                        
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_b:
+                    self.build_unit()
+                elif event.key == pygame.K_u:
+                    self.upgrade_region()
+                elif event.key == pygame.K_r:
+                    self.restart_game()
+                    
     def next_turn(self):
         self.current_turn_index = (self.current_turn_index + 1) % 3
         self.turn_counter += 1
         self.update_incomes()
         self.reset_moves()
-        self.generate_events()
         self.spawn_treasure()
         
         if self.current_turn() != self.player_country:
@@ -224,44 +231,81 @@ class Game:
                 region = random.choice(neutral_regions)
                 region.has_treasure = True
                 
-    def generate_events(self):
-        events = [
-            ('gold_rush', "Золотая лихорадка! Все доходы удвоены на 3 хода!", 3),
-            ('plague', "Эпидемия! Все юниты теряют 30% здоровья!", 1),
-            ('treasure', "Обнаружены скрытые сокровища!", 0)
-        ]
+    def build_unit(self):
+        if self.countries[self.player_country]["gold"] >= UNIT_COSTS['warrior']:
+            regions = [r for r in self.regions if r.country == self.player_country and r.unit is None]
+            if regions:
+                region = random.choice(regions)
+                unit_type = random.choice(['warrior', 'scout', 'knight'])
+                region.unit = Unit(region, self.player_country, unit_type)
+                self.countries[self.player_country]["gold"] -= UNIT_COSTS[unit_type]
+                
+    def upgrade_region(self):
+        if self.selected_unit and self.countries[self.player_country]["gold"] >= REGION_UPGRADE_COST:
+            region = self.selected_unit.region
+            if region.country == self.player_country:
+                region.upgrade_level += 1
+                self.countries[self.player_country]["gold"] -= REGION_UPGRADE_COST
+                
+    def restart_game(self):
+        self.generate_map()
+        self.create_starting_units()
+        self.countries = {c: {"gold": 100, "income": 0} for c in ["country1", "country2", "country3"]}
+        self.selected_unit = None
+        self.current_turn_index = 0
+        self.turn_counter = 1
         
-        if random.random() < 0.25:
-            event = random.choice(events)
-            self.apply_event(event)
+    def ai_turn(self):
+        for unit in [u for u in self.regions if u.unit and u.unit.owner == self.current_turn()]:
+            adjacent_regions = [r for r in self.regions if self.is_adjacent(unit.region, r)]
+            if adjacent_regions:
+                target_region = random.choice(adjacent_regions)
+                unit.unit.move_to(target_region, self)
+                
+    def check_victory(self):
+        player_regions = sum(1 for r in self.regions if r.country == self.player_country)
+        if player_regions == len(self.regions):
+            self.show_message("Victory!")
+            self.running = False
             
-    def apply_event(self, event):
-        # [Логика применения событий]
-        
+    def get_region_at_pos(self, x, y):
+        for region in self.regions:
+            if region.rect.collidepoint(x, y):
+                return region
+        return None
+    
+    def is_adjacent(self, region1, region2):
+        dx = abs(region1.x - region2.x)
+        dy = abs(region1.y - region2.y)
+        return (dx == GRID_SIZE and dy == 0) or (dx == 0 and dy == GRID_SIZE)
+    
+    def reset_moves(self):
+        for region in self.regions:
+            if region.unit:
+                region.unit.moves_left = region.unit.get_max_moves()
+                
     def draw_interface(self):
-        # Новая панель интерфейса
         pygame.draw.rect(screen, (40, 40, 40), (0, HEIGHT-100, WIDTH, 100))
-        
-        # Информация о игроке
         gold_text = font.render(f"Gold: {self.countries[self.player_country]['gold']} (+{self.countries[self.player_country]['income']}/turn)", 
                               True, (255, 255, 255))
         screen.blit(gold_text, (20, HEIGHT-80))
         
-        # Кнопки создания юнитов
-        x_pos = 400
-        for utype, cost in UNIT_COSTS.items():
-            pygame.draw.rect(screen, (60,60,60), (x_pos, HEIGHT-80, 120, 60))
-            screen.blit(self.unit_icons[utype], (x_pos+10, HEIGHT-75))
-            cost_text = font.render(f"{cost}G", True, (255,255,0))
-            screen.blit(cost_text, (x_pos+50, HEIGHT-50))
-            x_pos += 150
-            
-        # Кнопка улучшения региона
-        pygame.draw.rect(screen, (60,60,60), (x_pos, HEIGHT-80, 120, 60))
-        upgrade_text = font.render(f"Upgrade ({REGION_UPGRADE_COST}G)", True, (255,255,255))
-        screen.blit(upgrade_text, (x_pos+10, HEIGHT-70))
-
-# [Остальные методы класса Game остаются с изменениями]
+    def draw_game(self):
+        screen.fill((30, 30, 30))
+        for region in self.regions:
+            region.draw(screen)
+        self.draw_interface()
+        pygame.display.flip()
+        
+    def run(self):
+        self.generate_map()
+        self.create_starting_units()
+        while self.running:
+            self.handle_input()
+            self.draw_game()
+            clock.tick(FPS)
+        pygame.quit()
+        sys.exit()
 
 if __name__ == "__main__":
     game = Game()
